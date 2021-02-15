@@ -1,0 +1,23 @@
+H	Zekaric : Sync
+
+	|b ||. |Author:   | .|| b| Robbert de Groot
+	|b ||. |Copyright:| .|| b| 2012, Robbert de Groot
+	|b ||. |License:  | .|| b| MIT
+
+HH	Description:
+
+	A simply directory synchronization program.  It will make a directory exactly match another directory.
+
+HH	Use:
+
+	zsync [sourcePath] [destinationPath] [-e[.ext]+]
+
+=[
+-	[sourcePath]	Path of the source directory.  Include drive letter. Eg: D:\\, C:\\temp\\
+-	[destinationPath]	Path of the destination.  Include drive letter.
+-	[e[.ext]+]	List the file extensions to filter out.  No spaces between extensions.  Extensions include the '.'.
+]
+
+HH	Note:
+
+	The reason I wrote this tool is because I just needed something simple to synchronize my working directories on the hard drive of may main machine to a directory on a Network Attached Storage unit (NAS).  I found a lot of tools that would do this out there but a lot have become overly complicated and not what I am looking for.
