@@ -34,12 +34,28 @@ SOFTWARE.
 // Using //////////////////////////////////////////////////////////////////////
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace zsync
 {
+   [DebuggerDisplay("{Path,nq}, {Type}")]
+   class PathData
+   {
+      public enum PathType
+      {
+         NONE,
+         FILE,
+         DIR
+      };
+
+      public PathType Type { get; set; } = PathType.NONE;
+      public string   Path               = string.Empty;
+      public FileInfo Info { get; set; } = null;
+   }
+
    class Program
    {
       private const int indexSRC = 0;
@@ -53,13 +69,11 @@ namespace zsync
          string         spath,
                         dpath;
          string[]       option = { "", "" };
-         List<string>   spathList,
-                        dpathList,
-                        slist,
+         List<PathData> spathList,
+                        dpathList;
+         List<string>   slist,
                         excludeExt,
                         excludeDir;
-         List<FileInfo> sList,
-                        dList;
 
          // Print the header.
          Console.Write(
@@ -75,7 +89,7 @@ namespace zsync
                "[sourcePath]        - Path of the source.  Include drive. Eg: D:\\, C:\\temp\\\n" +
                "[destinationPath]   - Path of the destination.\n" +
                "[e[ext],...         - List the file extensions to filter out.\n" +
-               "[d[folder[,...      - List the folders to filter out.\n\n");
+               "[d[folder],...      - List the folders to filter out.\n\n");
             return 0;
          }
 
@@ -166,12 +180,12 @@ namespace zsync
 
          // Sort them and get the file information for each file.
          Console.Write("- Prepping trees.\n");
-         sList = _PrepDir(spath, spathList);
-         dList = _PrepDir(dpath, dpathList);
+         _PrepDir(spath, spathList);
+         _PrepDir(dpath, dpathList);
 
          // Do the synchronization/mirroring.
          Console.Write("- Synchonizing.\n");
-         _Sync(spath, spathList, sList, dpath, dpathList, dList);
+         _Sync(spath, spathList, dpath, dpathList);
 
          Console.Write("- Finished.\n");
          return 0;
@@ -179,16 +193,17 @@ namespace zsync
 
       // _GetFiles ////////////////////////////////////////////////////////////
       // Recursively fetches all the files in the directory.
-      static private List<string> _GetFiles(string path, List<String> excludeDir, List<String> excludeExt)
+      static private List<PathData> _GetFiles(string path, List<String> excludeDir, List<String> excludeExt)
       {
-         int          index,
-                      dindex,
-                      eindex,
-                      findex;
-         string[]     fileList,
-                      dirList;
-         List<string> pathList,
-                      pathListTemp;
+         int            index,
+                        dindex,
+                        eindex,
+                        findex;
+         string[]       fileList,
+                        dirList;
+         List<PathData> pathList,
+                        pathListTemp;
+         PathData       pathTemp;
 
          // Ignore recycling bin.
          if (path.IndexOf("$RECYCLE") >= 0)
@@ -201,7 +216,7 @@ namespace zsync
          // Get the files in this directory.
          fileList = Directory.GetFiles(      path, "*.*", SearchOption.TopDirectoryOnly);
 
-         pathList = new List<string>();
+         pathList = new List<PathData>();
 
          // Append the local files to the path list.
          for (findex = 0; findex < fileList.Length; findex++)
@@ -223,7 +238,11 @@ namespace zsync
                }
             }
 
-            pathList.Add(fileList[findex]);
+            pathTemp      = new PathData();
+            pathTemp.Type = PathData.PathType.FILE;
+            pathTemp.Path =              fileList[findex];
+            pathTemp.Info = new FileInfo(fileList[findex]);
+            pathList.Add(pathTemp);
          }
 
          // For all directories.
@@ -248,6 +267,11 @@ namespace zsync
                      continue;
                   }
                }
+
+               pathTemp      = new PathData();
+               pathTemp.Type = PathData.PathType.DIR;
+               pathTemp.Path = dirList[index];
+               pathList.Add(pathTemp);
 
                // Get their files.
                pathListTemp = _GetFiles(dirList[index], excludeDir, excludeExt);
@@ -287,123 +311,344 @@ namespace zsync
          return true;
       }
 
-      // _PrepDir /////////////////////////////////////////////////////////////
-      // Sort the path list and fetch the file information for each file.
-      static private List<FileInfo> _PrepDir(string path, List<string> pathList)
+      // _RemoveDir ///////////////////////////////////////////////////////////
+      // Remove a directory.
+      static void _RemoveDir(string dir)
       {
-         int            index;
-         FileInfo       fileInfo;
-         List<FileInfo> fileList = new List<FileInfo>();
-
-         pathList.Sort();
-         for (index = 0; index < pathList.Count(); index++)
+         if (!Directory.Exists(dir))
          {
-            fileInfo = new FileInfo(pathList[index]);
-
-            fileList.Add(fileInfo);
-            pathList[index] = pathList[index].Substring(path.Length);
+            return;
          }
 
-         return fileList;
+         try
+         {
+            Directory.Delete(dir, true);
+         }
+         catch
+         {
+            Console.Write("   Remove directory failed.\n");
+         }
+      }
+
+      // _PrepDir /////////////////////////////////////////////////////////////
+      // Sort the path list and fetch the file information for each file.
+      static private void _PrepDir(string path, List<PathData> pathList)
+      {
+         int index;
+
+         // Sort the list.  Put all the directory enters in alpha order at the
+         // start of the list.  Then the files in alpha order.  And finally the
+         // directory exits at the end.
+         pathList.Sort(delegate(PathData a, PathData b)
+         {
+            // Same path type, compare paths.
+            if (a.Type == b.Type)
+            {
+               return a.Path.CompareTo(b.Path);
+            }
+
+            // a and b are not the same types.
+            // a is a directory enter, then it will always be before b.
+            if (a.Type == PathData.PathType.DIR)
+            {
+               return -1;
+            }
+
+            // a is a file.
+            // b is a directory entry, then a will always be after b.
+            return 1;
+         });
+
+         // Trim the path string to relative path.
+         for (index = 0; index < pathList.Count; index++)
+         {
+            pathList[index].Path = pathList[index].Path.Substring(path.Length);
+         }
       }
 
       // _Sync ////////////////////////////////////////////////////////////////
       // Synch the two directories.
-      static private bool _Sync(string spath, List<string> spathList, List<FileInfo> sList, string dpath, List<string> dpathList, List<FileInfo> dList)
+      static private bool _Sync(string spath, List<PathData> spathDataList, string dpath, List<PathData> dpathDataList)
       {
-         int sindex,
-             dindex;
+         int            sindex,
+                        dindex,
+                        result;
+         List<PathData> sdir  = new List<PathData>(),
+                        ddir  = new List<PathData>(),
+                        sfile = new List<PathData>(),
+                        dfile = new List<PathData>();
+         
+         // Break up the lists.
+         for (sindex = 0; sindex < spathDataList.Count; sindex++)
+         {
+            if (spathDataList[sindex].Type == PathData.PathType.DIR)
+            {
+               sdir.Add(spathDataList[sindex]);
+            }
+            else
+            {
+               sfile.Add(spathDataList[sindex]);
+            }
+         }
 
+         for (dindex = 0; dindex < dpathDataList.Count; dindex++)
+         {
+            if (dpathDataList[dindex].Type == PathData.PathType.DIR)
+            {
+               ddir.Add(dpathDataList[dindex]);
+            }
+            else
+            {
+               dfile.Add(dpathDataList[dindex]);
+            }
+         }
+
+         // Stage 1:
+         // Create new directories in the destination.
          sindex    =
             dindex = 0;
-         for (; ; )
+         for (;;)
+         {
+            if (sindex == sdir.Count())
+            {
+               break;
+            }
+
+            // We have a source and destination folder to compare.
+            if      (sindex < sdir.Count &&
+                     dindex < ddir.Count)
+            {
+               // Compare the folder names.
+               result = sdir[sindex].Path.CompareTo(ddir[dindex].Path);
+               
+               // Folders exist in both, nothing to do.
+               if      (result == 0)
+               {
+                  // Move to the next folders in each list.
+                  sindex++;
+                  dindex++;
+               }
+               // Source folder is less alphabetically.  Meaning it doesn't exist  in the
+               // destination.  Create the folder.
+               else if (result < 0)
+               {
+                  Console.Write("N\\ " + sdir[sindex].Path + "\n");
+
+                  // Make sure the directory is created first.
+                  _MakeDir(dpath + sdir[sindex].Path);
+
+                  sindex++;
+               }
+               // Destination folder is less than the source folder.  Meaning the destination has
+               // folders that doesn't exist in the source.   These will be removed in stage 3.
+               else
+               {
+                  dindex++;
+               }
+            }
+            // There are more source folders than there are destination folders.  Ensure the new
+            // folders exist in the destination.
+            else if (sindex < sdir.Count)
+            {
+               Console.Write("N\\ " + sdir[sindex].Path + "\n");
+
+               // Make sure the directory is created first.
+               _MakeDir(dpath + sdir[sindex].Path);
+
+               sindex++;
+            }
+         }
+
+         // Stage 2:
+         // Move new files and files that are newer with the same name to the
+         // destination.
+         // Remove destination files that do not exist in the source list.
+         sindex    =
+            dindex = 0;
+         for (;;)
          {
             // We are done when there is nothing left to check.
-            if (sindex == spathList.Count() &&
-                dindex == dpathList.Count())
+            if (sindex == sfile.Count() &&
+                dindex == dfile.Count())
             {
                break;
             }
 
             // Files found with the same name.
             // Only valid if there is anything left in the destination list to check.
-            if      (dindex <  dpathList.Count() &&
-                     sindex != spathList.Count() &&
-                dpathList[dindex].CompareTo(spathList[sindex]) == 0)
-            {
-               // For some reason sList[sindex] may not have valid data.  It will except.
-               // So this try block is here to catch that.  Maybe something to do with permissions.
-               try
+            if      (dindex < dfile.Count() &&
+                     sindex < sfile.Count())
+            { 
+               result = sfile[sindex].Path.CompareTo(dfile[dindex].Path);
+
+               // Both files exist in both directories.
+               if (result == 0)
                {
-                  // Why not just dList[dindex].LastWriteTimeUtc < sList[sindex].LastWriteTimeUtc?
-                  // The millisecond tick count on my QNAP will be off by a few even for something that was 
-                  // just copied over.  So I just check down to the 'second' level and no more.
-                  if (dList[dindex].LastWriteTimeUtc.Year < sList[sindex].LastWriteTimeUtc.Year                                  ||
-                      (dList[dindex].LastWriteTimeUtc.Year == sList[sindex].LastWriteTimeUtc.Year                             &&
-                       (dList[dindex].LastWriteTimeUtc.DayOfYear < sList[sindex].LastWriteTimeUtc.DayOfYear                ||
-                        (dList[dindex].LastWriteTimeUtc.DayOfYear == sList[sindex].LastWriteTimeUtc.DayOfYear           &&
-                         (dList[dindex].LastWriteTimeUtc.Hour < sList[sindex].LastWriteTimeUtc.Hour                  ||
-                          (dList[dindex].LastWriteTimeUtc.Hour == sList[sindex].LastWriteTimeUtc.Hour             &&
-                           (dList[dindex].LastWriteTimeUtc.Minute < sList[sindex].LastWriteTimeUtc.Minute      ||
-                            (dList[dindex].LastWriteTimeUtc.Minute == sList[sindex].LastWriteTimeUtc.Minute &&
-                             dList[dindex].LastWriteTimeUtc.Second < sList[sindex].LastWriteTimeUtc.Second))))))))
+                  // For some reason s...[sindex].Info may not have valid data.  It will except.
+                  // So this try block is here to catch that.  Maybe something to do with
+                  // permissions.
+                  try
                   {
-                     // Try to copy the file.
-                     try
+                     // Why not just d...LastWriteTimeUtc < s...LastWriteTimeUtc?
+                     // The millisecond tick count on my QNAP will be off by a few even for
+                     // something that was just copied over.  So I just check down to the 'second'
+                     // level and no more.
+                     if (dfile[dindex].Info.LastWriteTimeUtc.Year < sfile[sindex].Info.LastWriteTimeUtc.Year                                  ||
+                         (dfile[dindex].Info.LastWriteTimeUtc.Year == sfile[sindex].Info.LastWriteTimeUtc.Year                             &&
+                          (dfile[dindex].Info.LastWriteTimeUtc.DayOfYear < sfile[sindex].Info.LastWriteTimeUtc.DayOfYear                ||
+                           (dfile[dindex].Info.LastWriteTimeUtc.DayOfYear == sfile[sindex].Info.LastWriteTimeUtc.DayOfYear           &&
+                            (dfile[dindex].Info.LastWriteTimeUtc.Hour < sfile[sindex].Info.LastWriteTimeUtc.Hour                  ||
+                             (dfile[dindex].Info.LastWriteTimeUtc.Hour == sfile[sindex].Info.LastWriteTimeUtc.Hour             &&
+                              (dfile[dindex].Info.LastWriteTimeUtc.Minute < sfile[sindex].Info.LastWriteTimeUtc.Minute      ||
+                               (dfile[dindex].Info.LastWriteTimeUtc.Minute == sfile[sindex].Info.LastWriteTimeUtc.Minute &&
+                                dfile[dindex].Info.LastWriteTimeUtc.Second < sfile[sindex].Info.LastWriteTimeUtc.Second))))))))
                      {
-                        Console.Write("> " + spathList[sindex] + "\n");
-                        File.Copy(spath + spathList[sindex], dpath + dpathList[dindex], true);
-                     }
-                     catch
-                     {
-                        Console.Write("   Copy Failed.\n");
+                        // Try to copy the file.
+                        try
+                        {
+                           Console.Write("> " + sfile[sindex].Path + "\n");
+                           File.Copy(spath + sfile[sindex].Path, dpath + dfile[dindex].Path, true);
+                        }
+                        catch
+                        {
+                           Console.Write("   Copy failed.\n");
+                        }
                      }
                   }
+                  catch
+                  {
+                     Console.Write(
+                        "   Copy failed.  Permissions?\n");
+                  }
+                  dindex++;
+                  sindex++;
                }
-               catch
+               // Source file is alphabetically less than the next destination file.  Meaning the
+               // source file doesn't exist in the destination.  Copy the new file.
+               else if (result < 0)
                {
-                  Console.Write(
-                     "ERROR: Received an exception on valid data.  Ignoring.\n" +
-                     " file: " + spathList[sindex] + "\n");
+                  // try and copy the new file.
+                  try
+                  {
+                     Console.Write("N  " + sfile[sindex].Path + "\n");
+
+                     File.Copy(spath + sfile[sindex].Path, dpath + sfile[sindex].Path);
+                  }
+                  catch
+                  {
+                     Console.Write("   Copy failed.\n");
+                  }
+
+                  sindex++;
                }
-               dindex++;
-               sindex++;
+               // Destination file is alphabetically less than the next source file.  Meaning the
+               // destination file doesn't exist in the source.  Remove the destination file.
+               else 
+               {
+                  // Try to delete the file.
+                  try
+                  {
+                     Console.Write("X  " + dfile[dindex].Path + "\n");
+                     File.Delete(dpath + dfile[dindex].Path);
+                  }
+                  catch
+                  {
+                     Console.Write("   Delete failed.\n");
+                  }
+
+                  dindex++;
+               }
             }
-            // Destination file is no longer around.
-            else if (dindex < dpathList.Count()       &&
-                     (sindex == spathList.Count()  ||
-                      dpathList[dindex].CompareTo(spathList[sindex]) < 0))
-            {
-               // Try to delete the file.
-               try
-               {
-                  Console.Write("X " + dpathList[dindex] + "\n");
-                  File.Delete(dpath + dpathList[dindex]);
-               }
-               catch
-               {
-                  Console.Write("   Delete failed.\n");
-               }
-               dindex++;
-            }
-            // Source file is not on the destination.
-            else
+            // There are more source files than there are destination files.  Copy the new files.
+            else if (sindex < sfile.Count())
             {
                // try and copy the new file.
                try
                {
-                  Console.Write("N " + spathList[sindex] + "\n");
+                  Console.Write("N  " + sfile[sindex].Path + "\n");
 
-                  // Make sure the directory is created first.
-                  _MakeDir(Path.GetDirectoryName(dpath + spathList[sindex]));
-
-                  File.Copy(spath + spathList[sindex], dpath + spathList[sindex]);
+                  File.Copy(spath + sfile[sindex].Path, dpath + sfile[sindex].Path);
                }
                catch
                {
                   Console.Write("   Copy failed.\n");
                }
+
                sindex++;
+            }
+            // There are more destination files than there are source files.  Remove the extra 
+            // destination files.
+            else
+            {
+               // Try to delete the file.
+               try
+               {
+                  Console.Write("X  " + dfile[dindex].Path + "\n");
+                  File.Delete(dpath + dfile[dindex].Path);
+               }
+               catch
+               {
+                  Console.Write("   Delete failed.\n");
+               }
+
+               dindex++;
+            }
+         }
+
+         // Stage 3:
+         // Remove destination folders, which should now be empty.  Done in reverse so that we do
+         // the deepest level folders first.
+         sindex = sdir.Count - 1;
+         dindex = ddir.Count - 1;
+         for (;;)
+         {
+            if (dindex == -1)
+            {
+               break;
+            }
+
+            // We have a source and destination folder to compare.
+            if      (sindex >= 0 &&
+                     dindex >= 0)
+            {
+               // Compare the folder names.
+               result = sdir[sindex].Path.CompareTo(ddir[dindex].Path);
+
+               // Folders exist in both, nothing to do.
+               if (result == 0)
+               {
+                  // Move to the next folders in each list.
+                  sindex--;
+                  dindex--;
+               }
+               // Source folder is greater alphabetically.  Meaning it doesn't exist  in the
+               // destination.  Nothing to do.
+               else if (result > 0)
+               {
+                  sindex--;
+               }
+               // Destination folder is less than the source folder.  Meaning the destination has
+               // folders that doesn't exist in the source.   Remove folder.
+               else
+               {
+                  Console.Write("X\\ " + ddir[dindex].Path + "\n");
+
+                  // Remove the directory.
+                  _RemoveDir(dpath + ddir[dindex].Path);
+
+                  dindex--;
+               }
+            }
+            // Ignore all the remaining destination folders.  These folders will be removed in
+            // stage 3.
+            else
+            {
+               Console.Write("X\\ " + ddir[dindex].Path + "\n");
+
+               // Remove the directory.
+               _RemoveDir(dpath + ddir[dindex].Path);
+
+               dindex--;
             }
          }
 
